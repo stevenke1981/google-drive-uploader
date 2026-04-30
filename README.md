@@ -1,29 +1,16 @@
 # Google Drive Uploader
 
-Uploads a file or folder to Google Drive and detects duplicates before upload.
+Uploads a file or folder to Google Drive with rclone and duplicate-aware copy options.
 
 ## Setup
 
-1. Create a Google Cloud OAuth client:
-   - Google Cloud Console -> APIs & Services -> Library -> enable **Google Drive API**
-   - APIs & Services -> Credentials -> Create Credentials -> OAuth client ID
-   - Application type: **Desktop app**
-   - Download the JSON file
-   - The first authorization asks for Google Drive access so the script can search the destination folder and detect existing duplicates.
-2. Save the JSON as:
+Install rclone first:
 
 ```powershell
-C:\Users\steven\Downloads\google-drive-uploader\credentials.json
+winget install Rclone.Rclone
 ```
 
-3. Install dependencies:
-
-```powershell
-cd C:\Users\steven\Downloads\google-drive-uploader
-python -m pip install -r requirements.txt
-```
-
-## Usage
+If `winget` is not available, download rclone from https://rclone.org/downloads/.
 
 ## 繁體中文圖形介面
 
@@ -41,51 +28,42 @@ Launch the Traditional Chinese GUI:
 python .\drive_upload_gui.py
 ```
 
-圖形介面可以選擇本機檔案或資料夾、輸入 Google Drive 目標資料夾 ID、選擇同名檔案處理方式，並支援「只預覽，不實際上傳」。
+圖形介面可以選擇本機檔案或資料夾、輸入 rclone remote 名稱與 Google Drive 目標路徑、選擇同名檔案處理方式，並支援「只預覽，不實際上傳」。
 
-GUI 啟動時會自動檢查 OAuth 授權：
+GUI 不再需要 `credentials.json`。按「建立/授權」後會執行 rclone 的 Google Drive remote 設定，rclone 會自動開瀏覽器進行 OAuth，token 會存到 rclone 自己的設定檔。
 
-- 如果已經有 `token.json`，會直接沿用。
-- 如果沒有 `token.json` 但找到 `credentials.json`，會自動開啟瀏覽器進行 Google OAuth 授權，完成後自動存成 `token.json`。
-- 如果找不到 `credentials.json`，GUI 會提示你選擇 Google OAuth Desktop app JSON 檔，選好後會立即啟動授權。
-- GUI 會把 credentials/token 路徑存在本機 `gui_settings.json`，此檔案已被 `.gitignore` 排除。
-
-## Command line usage
+## rclone command line usage
 
 Upload one file to your Drive root:
 
 ```powershell
-python .\drive_upload.py "C:\Users\steven\Downloads\example.zip"
+rclone copy "C:\Users\steven\Downloads\example.zip" gdrive: --checksum
 ```
 
-Upload a folder to your Drive root:
+Upload a folder:
 
 ```powershell
-python .\drive_upload.py "C:\Users\steven\Downloads\Documents"
-```
-
-Upload into a specific Google Drive folder:
-
-```powershell
-python .\drive_upload.py "C:\path\to\folder" --drive-folder-id "YOUR_FOLDER_ID"
+rclone copy "C:\Users\steven\Downloads\Documents" gdrive:Documents --checksum --create-empty-src-dirs
 ```
 
 Preview without uploading:
 
 ```powershell
-python .\drive_upload.py "C:\path\to\folder" --dry-run
+rclone copy "C:\path\to\folder" gdrive:Backup --checksum --dry-run
 ```
 
 ## Duplicate behavior
 
-- Exact duplicate in the same Drive folder: skipped.
-- Same name but different content: renamed by default, for example `report (a1b2c3d4).pdf`.
-- Change same-name behavior with:
+- `用 checksum 判斷，相同略過，不同更新`：uses `rclone copy --checksum`.
+- `只要同名已存在就略過`：uses `rclone copy --ignore-existing`.
+- `不檢查，全部重新上傳`：uses `rclone copy --ignore-times`.
+
+## Legacy Google API script
+
+The older Google API script is still present as `drive_upload.py`, but the GUI now uses rclone.
+
+Install its Python dependencies only if you still want to use that legacy script:
 
 ```powershell
-python .\drive_upload.py "C:\path\to\folder" --on-conflict skip
-python .\drive_upload.py "C:\path\to\folder" --on-conflict upload
-python .\drive_upload.py "C:\path\to\folder" --on-conflict rename
+python -m pip install -r requirements.txt
 ```
-
-Exact duplicate detection uses file size plus Google Drive MD5 when available, and also writes a local SHA-256 value into Drive app metadata for files uploaded by this script.
