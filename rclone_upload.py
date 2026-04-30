@@ -5,14 +5,18 @@ rclone-backed uploader helpers for Google Drive.
 
 from __future__ import annotations
 
+import queue
 import shutil
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 
 LogCallback = Callable[[str], None]
+RCLONE_CANCELLED_RETURN_CODE = -1
 
 
 @dataclass(frozen=True)
@@ -60,22 +64,24 @@ def configure_drive_remote(
     remote_name: str,
     rclone_path: str = "rclone",
     log: LogCallback | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> RcloneSummary:
     remote_name = normalize_remote(remote_name)
     log = log or print
     command = [rclone_path, "config", "create", remote_name, "drive", "scope", "drive"]
     log("執行：" + " ".join(command))
-    return _run_streaming(command, log)
+    return _run_streaming(command, log, cancel_event=cancel_event)
 
 
 def open_interactive_config(
     rclone_path: str = "rclone",
     log: LogCallback | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> RcloneSummary:
     log = log or print
     command = [rclone_path, "config"]
     log("執行：" + " ".join(command))
-    return _run_streaming(command, log)
+    return _run_streaming(command, log, cancel_event=cancel_event)
 
 
 def upload_with_rclone(
@@ -86,6 +92,7 @@ def upload_with_rclone(
     dry_run: bool = False,
     rclone_path: str = "rclone",
     log: LogCallback | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> RcloneSummary:
     source = source.resolve()
     if not source.exists():
@@ -116,10 +123,18 @@ def upload_with_rclone(
         command.append("--dry-run")
 
     log("執行：" + " ".join(command))
-    return _run_streaming(command, log)
+    return _run_streaming(command, log, cancel_event=cancel_event)
 
 
-def _run_streaming(command: list[str], log: LogCallback) -> RcloneSummary:
+def _run_streaming(
+    command: list[str],
+    log: LogCallback,
+    cancel_event: threading.Event | None = None,
+) -> RcloneSummary:
+    creationflags = 0
+    if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -128,14 +143,56 @@ def _run_streaming(command: list[str], log: LogCallback) -> RcloneSummary:
         encoding="utf-8",
         errors="replace",
         bufsize=1,
+        creationflags=creationflags,
     )
 
     assert process.stdout is not None
-    for line in process.stdout:
-        line = line.rstrip()
-        if line:
-            log(line)
+    output_queue: queue.Queue[str] = queue.Queue()
+
+    def read_output() -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            output_queue.put(line)
+
+    reader = threading.Thread(target=read_output, daemon=True)
+    reader.start()
+
+    while process.poll() is None:
+        _drain_output(output_queue, log)
+        if cancel_event and cancel_event.is_set():
+            log("正在取消 rclone 工作...")
+            _terminate_process(process)
+            _drain_output(output_queue, log)
+            log("已取消 rclone 工作。")
+            return RcloneSummary(returncode=RCLONE_CANCELLED_RETURN_CODE, command=command)
+        time.sleep(0.1)
+
     returncode = process.wait()
+    reader.join(timeout=1)
+    _drain_output(output_queue, log)
+    if process.stdout:
+        process.stdout.close()
     if returncode != 0:
         log(f"rclone 結束代碼：{returncode}")
     return RcloneSummary(returncode=returncode, command=command)
+
+
+def _drain_output(output_queue: queue.Queue[str], log: LogCallback) -> None:
+    while True:
+        try:
+            line = output_queue.get_nowait().rstrip()
+        except queue.Empty:
+            return
+        if line:
+            log(line)
+
+
+def _terminate_process(process: subprocess.Popen[str]) -> None:
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+    if process.stdout:
+        process.stdout.close()

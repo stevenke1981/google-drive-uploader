@@ -13,6 +13,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from rclone_upload import (
+    RCLONE_CANCELLED_RETURN_CODE,
     configure_drive_remote,
     find_rclone,
     open_interactive_config,
@@ -41,6 +42,7 @@ class DriveUploaderApp(tk.Tk):
 
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.worker: threading.Thread | None = None
+        self.cancel_event = threading.Event()
         self.settings = self._load_settings()
 
         self.rclone_path_var = tk.StringVar(value=self.settings.get("rclone_path", "rclone"))
@@ -97,7 +99,10 @@ class DriveUploaderApp(tk.Tk):
         actions.grid(row=7, column=1, sticky="e", pady=(10, 0))
         self.start_button = ttk.Button(actions, text="開始上傳", command=self._start_upload)
         self.start_button.grid(row=0, column=0, padx=(0, 8))
-        ttk.Button(actions, text="清除紀錄", command=self._clear_log).grid(row=0, column=1)
+        self.cancel_button = ttk.Button(actions, text="取消", command=self._cancel_job, state="disabled")
+        self.cancel_button.grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(actions, text="複製紀錄", command=self._copy_log).grid(row=0, column=2, padx=(0, 8))
+        ttk.Button(actions, text="清除紀錄", command=self._clear_log).grid(row=0, column=3)
 
         output = ttk.Frame(self, padding=(16, 0, 16, 16))
         output.grid(row=1, column=0, sticky="nsew")
@@ -222,10 +227,20 @@ class DriveUploaderApp(tk.Tk):
             messagebox.showinfo("執行中", "目前已有工作正在執行。")
             return
         self._save_settings()
+        self.cancel_event.clear()
         self.start_button.configure(state="disabled")
+        self.cancel_button.configure(state="normal")
         self.progress_bar.start(10)
         self.worker = threading.Thread(target=target, daemon=True)
         self.worker.start()
+
+    def _cancel_job(self) -> None:
+        if not self.worker or not self.worker.is_alive():
+            return
+        self.cancel_event.set()
+        self.cancel_button.configure(state="disabled")
+        self.status_var.set("正在取消...")
+        self._append_log("已送出取消要求，正在停止 rclone 工作...")
 
     def _config_worker(self) -> None:
         try:
@@ -236,6 +251,7 @@ class DriveUploaderApp(tk.Tk):
                 remote_name,
                 rclone_path,
                 log=lambda message: self.events.put(("log", message)),
+                cancel_event=self.cancel_event,
             )
             self.events.put(("config_done", summary.returncode))
         except (OSError, RuntimeError, ValueError) as exc:
@@ -248,6 +264,7 @@ class DriveUploaderApp(tk.Tk):
             summary = open_interactive_config(
                 rclone_path,
                 log=lambda message: self.events.put(("log", message)),
+                cancel_event=self.cancel_event,
             )
             self.events.put(("config_done", summary.returncode))
         except (OSError, RuntimeError, ValueError) as exc:
@@ -268,6 +285,7 @@ class DriveUploaderApp(tk.Tk):
                 dry_run=self.dry_run_var.get(),
                 rclone_path=rclone_path,
                 log=lambda message: self.events.put(("log", message)),
+                cancel_event=self.cancel_event,
             )
             self.events.put(("upload_done", summary.returncode))
         except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
@@ -292,7 +310,10 @@ class DriveUploaderApp(tk.Tk):
                 self.status_var.set(str(payload))
             elif event == "config_done":
                 self._finish_job()
-                if payload == 0:
+                if payload == RCLONE_CANCELLED_RETURN_CODE:
+                    self.status_var.set("已取消")
+                    self._append_log("rclone remote 設定已取消。")
+                elif payload == 0:
                     self.status_var.set("rclone remote 設定完成")
                     self._check_rclone_status()
                     messagebox.showinfo("完成", "rclone Google Drive remote 設定完成。")
@@ -301,11 +322,16 @@ class DriveUploaderApp(tk.Tk):
                     messagebox.showerror("錯誤", f"rclone 設定失敗，結束代碼：{payload}")
             elif event == "upload_done":
                 self._finish_job()
-                if payload == 0:
+                if payload == RCLONE_CANCELLED_RETURN_CODE:
+                    self.status_var.set("已取消")
+                    self._append_log("rclone 上傳已取消。")
+                elif payload == 0:
                     self.status_var.set("上傳完成")
+                    self._append_log("上傳成功：rclone 上傳流程已完成。")
                     messagebox.showinfo("完成", "rclone 上傳流程已完成。")
                 else:
                     self.status_var.set("上傳失敗")
+                    self._append_log(f"上傳失敗：rclone 結束代碼 {payload}。")
                     messagebox.showerror("錯誤", f"rclone 上傳失敗，結束代碼：{payload}")
             elif event == "error":
                 self._finish_job()
@@ -318,6 +344,7 @@ class DriveUploaderApp(tk.Tk):
     def _finish_job(self) -> None:
         self.progress_bar.stop()
         self.start_button.configure(state="normal")
+        self.cancel_button.configure(state="disabled")
 
     def _append_log(self, message: str) -> None:
         self.log_text.insert("end", f"{message}\n")
@@ -325,6 +352,16 @@ class DriveUploaderApp(tk.Tk):
 
     def _clear_log(self) -> None:
         self.log_text.delete("1.0", "end")
+
+    def _copy_log(self) -> None:
+        content = self.log_text.get("1.0", "end-1c")
+        if not content.strip():
+            messagebox.showinfo("沒有紀錄", "目前沒有可複製的運行紀錄。")
+            return
+        self.clipboard_clear()
+        self.clipboard_append(content)
+        self.update()
+        self.status_var.set("運行紀錄已複製")
 
 
 def main() -> int:
