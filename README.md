@@ -7,10 +7,10 @@ Uploads a file or folder to Google Drive with rclone and duplicate-aware copy op
 Install rclone first:
 
 ```powershell
-winget install Rclone.Rclone
+install_rclone.bat
 ```
 
-If `winget` is not available, download rclone from https://rclone.org/downloads/.
+The installer uses `winget install --id Rclone.Rclone --exact --source winget`. If `winget` is not available, it opens the official rclone download page: https://rclone.org/downloads/.
 
 ## 繁體中文圖形介面
 
