@@ -105,12 +105,13 @@ class DriveUploaderApp(tk.Tk):
         output.rowconfigure(2, weight=1)
 
         ttk.Label(output, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
-        ttk.Progressbar(
+        self.progress_bar = ttk.Progressbar(
             output,
             variable=self.progress_var,
             maximum=100,
             mode="indeterminate",
-        ).grid(row=1, column=0, sticky="ew", pady=(6, 10))
+        )
+        self.progress_bar.grid(row=1, column=0, sticky="ew", pady=(6, 10))
 
         self.log_text = tk.Text(output, height=14, wrap="word")
         self.log_text.grid(row=2, column=0, sticky="nsew")
@@ -222,7 +223,7 @@ class DriveUploaderApp(tk.Tk):
             return
         self._save_settings()
         self.start_button.configure(state="disabled")
-        self.progress_var.start(10)
+        self.progress_bar.start(10)
         self.worker = threading.Thread(target=target, daemon=True)
         self.worker.start()
 
@@ -315,7 +316,7 @@ class DriveUploaderApp(tk.Tk):
         self.after(120, self._drain_events)
 
     def _finish_job(self) -> None:
-        self.progress_var.stop()
+        self.progress_bar.stop()
         self.start_button.configure(state="normal")
 
     def _append_log(self, message: str) -> None:
