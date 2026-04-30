@@ -25,6 +25,26 @@ python -m pip install -r requirements.txt
 
 ## Usage
 
+## 繁體中文圖形介面
+
+在 Windows 可直接雙擊：
+
+```powershell
+start_gui.bat
+```
+
+或使用命令啟動：
+
+Launch the Traditional Chinese GUI:
+
+```powershell
+python .\drive_upload_gui.py
+```
+
+圖形介面可以選擇本機檔案或資料夾、輸入 Google Drive 目標資料夾 ID、選擇同名檔案處理方式，並支援「只預覽，不實際上傳」。
+
+## Command line usage
+
 Upload one file to your Drive root:
 
 ```powershell

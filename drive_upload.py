@@ -16,7 +16,7 @@ import sys
 import warnings
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Iterable
+from typing import Callable, Iterable
 
 warnings.filterwarnings(
     "ignore",
@@ -44,6 +44,18 @@ class LocalFile:
     size: int
     md5: str
     sha256: str
+
+
+@dataclass(frozen=True)
+class UploadSummary:
+    uploaded: int
+    skipped: int
+    name_conflicts: int
+    total: int
+
+
+LogCallback = Callable[[str], None]
+ProgressCallback = Callable[[LocalFile, int, int], None]
 
 
 def parse_args() -> argparse.Namespace:
@@ -256,7 +268,15 @@ def conflict_name(original_name: str, sha256: str) -> str:
     return f"{path.name}{suffix}"
 
 
-def upload_file(service, local_file: LocalFile, parent_id: str, drive_name: str, dry_run: bool):
+def upload_file(
+    service,
+    local_file: LocalFile,
+    parent_id: str,
+    drive_name: str,
+    dry_run: bool,
+    progress_callback: ProgressCallback | None = None,
+    show_progress_bar: bool = True,
+):
     mime_type, _ = mimetypes.guess_type(local_file.path.name)
     mime_type = mime_type or "application/octet-stream"
 
@@ -280,72 +300,122 @@ def upload_file(service, local_file: LocalFile, parent_id: str, drive_name: str,
     )
 
     response = None
-    progress_bar = tqdm(
-        total=local_file.size,
-        unit="B",
-        unit_scale=True,
-        desc=drive_name,
-        leave=False,
-    )
+    progress_bar = None
+    if show_progress_bar:
+        progress_bar = tqdm(
+            total=local_file.size,
+            unit="B",
+            unit_scale=True,
+            desc=drive_name,
+            leave=False,
+        )
     last_progress = 0
     while response is None:
         status, response = request.next_chunk()
         if status:
             current = int(status.resumable_progress)
-            progress_bar.update(max(0, current - last_progress))
+            if progress_bar:
+                progress_bar.update(max(0, current - last_progress))
+            if progress_callback:
+                progress_callback(local_file, current, local_file.size)
             last_progress = current
-    progress_bar.update(max(0, local_file.size - last_progress))
-    progress_bar.close()
+    if progress_bar:
+        progress_bar.update(max(0, local_file.size - last_progress))
+        progress_bar.close()
+    if progress_callback:
+        progress_callback(local_file, local_file.size, local_file.size)
     return response
+
+
+def run_upload(
+    source: Path,
+    drive_folder_id: str = "root",
+    destination_name: str | None = None,
+    credentials: Path | None = None,
+    token: Path | None = None,
+    on_conflict: str = "rename",
+    dry_run: bool = False,
+    log: LogCallback | None = None,
+    progress: ProgressCallback | None = None,
+    show_progress_bar: bool = True,
+) -> UploadSummary:
+    credentials = credentials or Path(__file__).with_name("credentials.json")
+    token = token or Path(__file__).with_name("token.json")
+    log = log or print
+
+    service = authenticate(credentials, token)
+    files = collect_files(source, destination_name)
+    if not files:
+        log("No files found to upload.")
+        return UploadSummary(uploaded=0, skipped=0, name_conflicts=0, total=0)
+
+    uploaded = skipped = conflicts = 0
+
+    for local_file in files:
+        parent_id = ensure_parent_path(
+            service, drive_folder_id, local_file.relative_path, dry_run
+        )
+        drive_name = local_file.relative_path.name
+        existing = find_same_name_files(service, parent_id, drive_name)
+        classification, match = classify_duplicate(existing, local_file)
+
+        if classification == "exact":
+            skipped += 1
+            link = match.get("webViewLink", "") if match else ""
+            log(f"SKIP duplicate: {local_file.relative_path} {link}".rstrip())
+            continue
+
+        if classification == "name-conflict":
+            conflicts += 1
+            if on_conflict == "skip":
+                skipped += 1
+                log(f"SKIP name conflict: {local_file.relative_path}")
+                continue
+            if on_conflict == "rename":
+                drive_name = conflict_name(drive_name, local_file.sha256)
+                log(f"RENAME conflict: {local_file.relative_path} -> {drive_name}")
+            else:
+                log(f"UPLOAD conflict copy: {local_file.relative_path}")
+
+        result = upload_file(
+            service,
+            local_file,
+            parent_id,
+            drive_name,
+            dry_run,
+            progress_callback=progress,
+            show_progress_bar=show_progress_bar,
+        )
+        uploaded += 1
+        link = result.get("webViewLink", "")
+        action = "WOULD UPLOAD" if dry_run else "UPLOADED"
+        log(f"{action}: {local_file.relative_path} {link}".rstrip())
+
+    summary = UploadSummary(
+        uploaded=uploaded,
+        skipped=skipped,
+        name_conflicts=conflicts,
+        total=len(files),
+    )
+    log(
+        f"Done. uploaded={summary.uploaded}, skipped={summary.skipped}, "
+        f"name_conflicts={summary.name_conflicts}, total={summary.total}"
+    )
+    return summary
 
 
 def main() -> int:
     args = parse_args()
 
     try:
-        service = authenticate(args.credentials, args.token)
-        files = collect_files(args.source, args.destination_name)
-        if not files:
-            print("No files found to upload.")
-            return 0
-
-        uploaded = skipped = conflicts = 0
-
-        for local_file in files:
-            parent_id = ensure_parent_path(
-                service, args.drive_folder_id, local_file.relative_path, args.dry_run
-            )
-            drive_name = local_file.relative_path.name
-            existing = find_same_name_files(service, parent_id, drive_name)
-            classification, match = classify_duplicate(existing, local_file)
-
-            if classification == "exact":
-                skipped += 1
-                link = match.get("webViewLink", "") if match else ""
-                print(f"SKIP duplicate: {local_file.relative_path} {link}".rstrip())
-                continue
-
-            if classification == "name-conflict":
-                conflicts += 1
-                if args.on_conflict == "skip":
-                    skipped += 1
-                    print(f"SKIP name conflict: {local_file.relative_path}")
-                    continue
-                if args.on_conflict == "rename":
-                    drive_name = conflict_name(drive_name, local_file.sha256)
-                    print(f"RENAME conflict: {local_file.relative_path} -> {drive_name}")
-                else:
-                    print(f"UPLOAD conflict copy: {local_file.relative_path}")
-
-            result = upload_file(service, local_file, parent_id, drive_name, args.dry_run)
-            uploaded += 1
-            link = result.get("webViewLink", "")
-            action = "WOULD UPLOAD" if args.dry_run else "UPLOADED"
-            print(f"{action}: {local_file.relative_path} {link}".rstrip())
-
-        print(
-            f"Done. uploaded={uploaded}, skipped={skipped}, "
-            f"name_conflicts={conflicts}, total={len(files)}"
+        run_upload(
+            source=args.source,
+            drive_folder_id=args.drive_folder_id,
+            destination_name=args.destination_name,
+            credentials=args.credentials,
+            token=args.token,
+            on_conflict=args.on_conflict,
+            dry_run=args.dry_run,
         )
         return 0
     except (FileNotFoundError, HttpError, ValueError) as exc:
