@@ -5,4 +5,5 @@ venv/
 
 credentials.json
 token.json
+gui_settings.json
 *.log

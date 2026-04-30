@@ -43,6 +43,13 @@ python .\drive_upload_gui.py
 
 圖形介面可以選擇本機檔案或資料夾、輸入 Google Drive 目標資料夾 ID、選擇同名檔案處理方式，並支援「只預覽，不實際上傳」。
 
+GUI 啟動時會自動檢查 OAuth 授權：
+
+- 如果已經有 `token.json`，會直接沿用。
+- 如果沒有 `token.json` 但找到 `credentials.json`，會自動開啟瀏覽器進行 Google OAuth 授權，完成後自動存成 `token.json`。
+- 如果找不到 `credentials.json`，GUI 會提示你選擇 Google OAuth Desktop app JSON 檔，選好後會立即啟動授權。
+- GUI 會把 credentials/token 路徑存在本機 `gui_settings.json`，此檔案已被 `.gitignore` 排除。
+
 ## Command line usage
 
 Upload one file to your Drive root:

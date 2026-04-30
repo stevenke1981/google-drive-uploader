@@ -136,6 +136,7 @@ def authenticate(credentials_path: Path, token_path: Path):
 
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
+        token_path.write_text(creds.to_json(), encoding="utf-8")
 
     if not creds or not creds.valid:
         if not credentials_path.exists():
